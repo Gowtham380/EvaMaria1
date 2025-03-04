@@ -1,6 +1,6 @@
 import os
 import asyncio
-from telethon import TelegramClient, events
+from telethon import TelegramClient, events, Button
 from pymongo import MongoClient
 from flask import Flask
 import threading
@@ -10,7 +10,7 @@ API_ID = int(os.getenv("API_ID", "21953115"))
 API_HASH = os.getenv("API_HASH", "edfd34085e9ba51303155f75d77b09ae")  
 BOT_TOKEN = os.getenv("BOT_TOKEN", "6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")  
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Gowtham:Gowt380+@cluster0.du2bi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")  
-CHANNELS = [-1002001238432]  # Replace with your actual channel ID
+CHANNELS = list(map(int, os.getenv("CHANNELS", "-1002001238432").split(",")))  # ✅ Add multiple channels
 
 # ✅ Initialize Telethon Client
 client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -20,20 +20,20 @@ mongo_client = MongoClient(MONGO_URI)
 db = mongo_client["MovieBot"]
 movies_collection = db["movies"]
 
-# ✅ Auto Indexing: Store files from channel
+# ✅ Auto Indexing: Store files from multiple channels
 @client.on(events.NewMessage(chats=CHANNELS))
 async def index_movies(event):
     if event.document:
         file_name = event.document.attributes[0].file_name if event.document.attributes else "Unknown"
-        file_id = event.document.id
-        file_unique_id = event.document.id  # Fixed: Using file ID
+        file_id = event.message.id
+        file_unique_id = event.document.file_unique_id
 
         movies_collection.update_one(
             {"file_unique_id": file_unique_id},
-            {"$set": {"file_name": file_name, "file_id": file_id}},
+            {"$set": {"file_name": file_name, "file_id": file_id, "channel_id": event.chat_id}},
             upsert=True
         )
-        print(f"Indexed: {file_name}")
+        print(f"Indexed: {file_name} from Channel {event.chat_id}")
 
 # ✅ Search System: Find movies
 @client.on(events.NewMessage(pattern='/search'))
@@ -49,35 +49,21 @@ async def search_movies(event):
         await event.reply("❌ No movies found.")
         return
 
-    response = "🎬 **Search Results:**\n\n"
-    for movie in results:
-        response += f"📂 `{movie['file_name']}`\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})\n\n"
-    
-    await event.reply(response, link_preview=False)
-
-# ✅ Inline Search
-@client.on(events.InlineQuery)
-async def inline_search(event):
-    query = event.text.strip()
-    if not query:
-        return
-
-    results = list(movies_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10))
-
-    if not results:
-        await event.answer([], switch_pm_text="❌ No movies found.", switch_pm_parameter="start")
-        return
-
-    articles = [
-        event.builder.article(
-            title=movie["file_name"],
-            description="Click to download",
-            text=f"🎬 **{movie['file_name']}**\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})",
-            link_preview=False
-        )
+    buttons = [
+        [Button.url(movie['file_name'], f"https://t.me/c/{abs(movie['channel_id'])}/{movie['file_id']}")]
         for movie in results
     ]
-    await event.answer(articles)
+    
+    await event.reply("🎬 **Search Results:**", buttons=buttons)
+
+# ✅ Start Command
+@client.on(events.NewMessage(pattern='/start'))
+async def start(event):
+    await event.reply(
+        "👋 Hello! I'm your movie bot.\n\n"
+        "🔍 Use /search <movie name> to find movies.\n"
+        "🎬 Use inline search (@botusername <movie name>) to find movies."
+    )
 
 # ✅ Admin Controls
 @client.on(events.NewMessage(pattern='/filter'))
@@ -89,12 +75,12 @@ async def filter_command(event):
 
 async def is_admin(chat_id, user_id):
     try:
-        perms = await client.get_permissions(chat_id, user_id)
-        return perms.is_admin
+        participant = await client.get_participant(chat_id, user_id)
+        return participant.is_admin
     except:
         return False
 
-# ✅ Flask Web Service
+# ✅ Flask Web Service (Keeps bot alive)
 app = Flask(__name__)
 
 @app.route('/')
