@@ -1,11 +1,11 @@
 from pyrogram import Client, filters
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message, InlineQueryResultDocument
 import os
 import asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
 from datetime import datetime
 
-# Load environment variables
+# Load environment variables correctly
 API_ID = int(os.getenv("21953115"))
 API_HASH = os.getenv("edfd34085e9ba51303155f75d77b09ae")
 BOT_TOKEN = os.getenv("6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")
@@ -51,10 +51,17 @@ async def inline_search(client, query):
     await query.answer(results, cache_time=1)
 
 # Broadcast to all users (Admin only)
-@bot.on_message(filters.command("broadcast") & filters.user(123456789))  # Replace with your Telegram ID
+ADMIN_ID = 123456789  # Replace with your Telegram ID
+
+@bot.on_message(filters.command("broadcast") & filters.user(ADMIN_ID))
 async def broadcast(client, message: Message):
+    if len(message.command) < 2:
+        await message.reply_text("Usage: /broadcast <message>")
+        return
+
     text = message.text.split(" ", 1)[1]
     users = await users_col.find().to_list(length=10000)
+
     for user in users:
         try:
             await client.send_message(user["_id"], text)
