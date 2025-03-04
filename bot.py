@@ -3,7 +3,7 @@ from telethon import TelegramClient, events
 
 # Replace with your actual API credentials
 API_ID = 21953115  # Replace with your API ID
-API_HASH = edfd34085e9ba51303155f75d77b09ae
+API_HASH = "edfd34085e9ba51303155f75d77b09ae"
 BOT_TOKEN = "6546811614:AAEbnyecTpv_3fs7VRj_uLWb8bmr12NzSK4"
 
 # Initialize the bot client
