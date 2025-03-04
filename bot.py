@@ -10,7 +10,7 @@ API_ID = int(os.getenv("API_ID", "21953115"))
 API_HASH = os.getenv("API_HASH", "edfd34085e9ba51303155f75d77b09ae")  
 BOT_TOKEN = os.getenv("BOT_TOKEN", "6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")  
 MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Gowtham:Gowt380+@cluster0.du2bi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")  
-CHANNELS = [-1002001238432]  # Replace with your channel IDs
+CHANNELS = [-1002001238432]  # Replace with your actual channel ID
 
 # ✅ Initialize Telethon Client
 client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -26,7 +26,7 @@ async def index_movies(event):
     if event.document:
         file_name = event.document.attributes[0].file_name if event.document.attributes else "Unknown"
         file_id = event.document.id
-        file_unique_id = event.document.file_reference
+        file_unique_id = event.document.id  # Fixed: Using file ID
 
         movies_collection.update_one(
             {"file_unique_id": file_unique_id},
@@ -63,17 +63,17 @@ async def inline_search(event):
         return
 
     results = list(movies_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10))
-    
+
     if not results:
         await event.answer([], switch_pm_text="❌ No movies found.", switch_pm_parameter="start")
         return
 
     articles = [
-        client.builder.article(
+        event.builder.article(
             title=movie["file_name"],
             description="Click to download",
-            url=f"https://t.me/{event.chat.username}/{movie['file_id']}",
-            text=f"🎬 **{movie['file_name']}**\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})"
+            text=f"🎬 **{movie['file_name']}**\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})",
+            link_preview=False
         )
         for movie in results
     ]
@@ -89,8 +89,8 @@ async def filter_command(event):
 
 async def is_admin(chat_id, user_id):
     try:
-        participant = await client.get_participant(chat_id, user_id)
-        return participant.is_admin
+        perms = await client.get_permissions(chat_id, user_id)
+        return perms.is_admin
     except:
         return False
 
