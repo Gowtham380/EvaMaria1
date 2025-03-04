@@ -1,112 +1,100 @@
 import os
-import asyncio
-from telethon import TelegramClient, events
+import logging
+from dotenv import load_dotenv
 from pymongo import MongoClient
-from flask import Flask
-import threading
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-# ✅ Load Environment Variables
-API_ID = int(os.getenv("API_ID", "21953115"))  
-API_HASH = os.getenv("API_HASH", "edfd34085e9ba51303155f75d77b09ae")  
-BOT_TOKEN = os.getenv("BOT_TOKEN", "6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")  
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Gowtham:Gowt380+@cluster0.du2bi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")  
-CHANNELS = [-1002001238432]  # 🔴 Replace with your Telegram channel ID(s)
+# Load environment variables
+load_dotenv()
 
-# ✅ Initialize Telegram Client
-client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Logging setup
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# ✅ Connect to MongoDB
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["MovieBot"]
-movies_collection = db["movies"]
+# Bot credentials from environment variables
+API_ID = int(os.getenv("API_ID"))
+API_HASH = os.getenv("API_HASH")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MONGO_URI = os.getenv("MONGO_URI")
+CHANNELS = list(map(int, os.getenv("CHANNELS", "").split(",")))  # List of channel IDs
+ADMINS = list(map(int, os.getenv("ADMINS", "").split(",")))  # List of admin user IDs
 
-# ✅ Auto-Indexing: Store movie details from channel
-@client.on(events.NewMessage(chats=CHANNELS))
-async def index_movies(event):
-    if event.document:  # Check if it's a file
-        file_name = event.document.attributes[0].file_name if event.document.attributes else "Unknown"
-        file_id = event.document.id
-        file_unique_id = event.document.file_reference
+# Initialize bot client
+bot = Client("MovieBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-        movies_collection.update_one(
-            {"file_unique_id": file_unique_id},
-            {"$set": {"file_name": file_name, "file_id": file_id, "channel_id": event.chat_id}},
-            upsert=True
-        )
-        print(f"✅ Indexed: {file_name}")
+# Connect to MongoDB
+try:
+    mongo_client = MongoClient(MONGO_URI)
+    db = mongo_client["MovieBotDB"]
+    movie_collection = db["movies"]
+    logger.info("Connected to MongoDB!")
+except Exception as e:
+    logger.error(f"MongoDB Connection Error: {e}")
 
-# ✅ Search System: Find movies in the database
-@client.on(events.NewMessage(pattern='/search'))
-async def search_movies(event):
-    query = event.text.split(maxsplit=1)[-1].strip()
+# Start Command
+@bot.on_message(filters.command("start"))
+def start(client, message):
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Search Movies", switch_inline_query_current_chat="")]
+    ])
+    message.reply_text(f"👋 Hello {message.from_user.first_name}!\n\nSearch movies by typing their name.", reply_markup=keyboard)
+
+# Help Command
+@bot.on_message(filters.command("help"))
+def help_command(client, message):
+    message.reply_text("🔍 Search for movies by typing their name.\n\nAdmins can use /filter to add new movies.")
+
+# Add Filter Command (Admin Only)
+@bot.on_message(filters.command("filter") & filters.user(ADMINS))
+def add_filter(client, message):
+    args = message.text.split(" ", 2)
+    if len(args) < 3:
+        message.reply_text("Usage: `/filter <movie_name> <file_id>`", parse_mode="markdown")
+        return
+
+    movie_name, file_id = args[1].lower(), args[2]
+    
+    # Store movie details in MongoDB
+    movie_collection.insert_one({"name": movie_name, "file_id": file_id})
+    message.reply_text(f"✅ Movie '{movie_name}' added successfully!")
+
+# Inline Search Handler
+@bot.on_inline_query()
+def search_movie(client, inline_query):
+    query = inline_query.query.lower()
     if not query:
-        await event.reply("⚠️ Please enter a movie name to search.")
         return
-
-    results = list(movies_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10))
     
-    if not results:
-        await event.reply("❌ No movies found.")
-        return
+    results = []
+    movies = movie_collection.find({"name": {"$regex": query, "$options": "i"}})
 
-    response = "🎬 **Search Results:**\n\n"
-    for movie in results:
-        response += f"📂 `{movie['file_name']}`\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})\n\n"
-    
-    await event.reply(response, link_preview=False)
-
-# ✅ Inline Search System
-@client.on(events.InlineQuery)
-async def inline_search(event):
-    query = event.text.strip()
-    if not query:
-        return
-
-    results = list(movies_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10))
-    
-    if not results:
-        await event.answer([], switch_pm_text="❌ No movies found.", switch_pm_parameter="start")
-        return
-
-    articles = [
-        client.builder.article(
-            title=movie["file_name"],
-            description="Click to download",
-            url=f"https://t.me/{event.chat.username}/{movie['file_id']}",
-            text=f"🎬 **{movie['file_name']}**\n👉 [Download](https://t.me/{event.chat.username}/{movie['file_id']})"
+    for movie in movies:
+        results.append(
+            InlineQueryResultDocument(
+                title=movie["name"],
+                document_file_id=movie["file_id"],
+                description="Click to download"
+            )
         )
-        for movie in results
-    ]
-    await event.answer(articles)
+    
+    inline_query.answer(results, cache_time=10)
 
-# ✅ Admin Control: Filter Management
-@client.on(events.NewMessage(pattern='/filter'))
-async def filter_command(event):
-    if not await is_admin(event.chat_id, event.sender_id):
-        await event.reply("🚫 Only admins can use this command.")
+# Monitor New Files in Channels (Auto Indexing)
+@bot.on_message(filters.channel & filters.document)
+def save_movie(client, message):
+    if message.chat.id not in CHANNELS:
         return
-    await event.reply("✅ Admin filter settings applied.")
 
-async def is_admin(chat_id, user_id):
-    try:
-        participant = await client.get_participant(chat_id, user_id)
-        return participant.is_admin
-    except:
-        return False
+    movie_name = message.caption.lower() if message.caption else "Unknown Movie"
+    file_id = message.document.file_id
 
-# ✅ Flask Web Service for Koyeb Deployment
-app = Flask(__name__)
+    if movie_collection.find_one({"file_id": file_id}):
+        return
 
-@app.route('/')
-def home():
-    return "Bot is running"
+    movie_collection.insert_one({"name": movie_name, "file_id": file_id})
+    logger.info(f"New movie indexed: {movie_name}")
 
-def run_web():
-    app.run(host="0.0.0.0", port=8000)
-
-# ✅ Run Bot & Web Server Together
-if __name__ == '__main__':
-    threading.Thread(target=run_web).start()
-    with client:
-        print("🚀 Bot started successfully!")
-        client.run_until_disconnected()
+# Run the bot
+if __name__ == "__main__":
+    bot.run()
