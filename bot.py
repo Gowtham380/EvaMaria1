@@ -1,98 +1,65 @@
+from pyrogram import Client, filters
+from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 import os
 import asyncio
-from telethon import TelegramClient, events, Button
-from pymongo import MongoClient
-from flask import Flask
-import threading
+from motor.motor_asyncio import AsyncIOMotorClient
+from datetime import datetime
 
-# ✅ Load environment variables
-API_ID = int(os.getenv("API_ID", "21953115"))  
-API_HASH = os.getenv("API_HASH", "edfd34085e9ba51303155f75d77b09ae")  
-BOT_TOKEN = os.getenv("BOT_TOKEN", "6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")  
-MONGO_URI = os.getenv("MONGO_URI", "mongodb+srv://Gowtham:Gowt380+@cluster0.du2bi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")  
-CHANNELS = list(map(int, os.getenv("CHANNELS", "-1002001238432").split(",")))  # ✅ Add multiple channels
+# Load environment variables
+API_ID = int(os.getenv("21953115"))
+API_HASH = os.getenv("edfd34085e9ba51303155f75d77b09ae")
+BOT_TOKEN = os.getenv("6546811614:AAGdwWWHWLcqaneUnM5OpJ12tB0RgKIRzbY")
+MONGO_URL = os.getenv("mongodb+srv://Gowtham:Gowt380+@cluster0.du2bi.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0")
 
-# ✅ Initialize Telethon Client
-client = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+# Database setup
+client = AsyncIOMotorClient(MONGO_URL)
+db = client['EvaMaria']
+files_col = db['files']
+users_col = db['users']
 
-# ✅ MongoDB Connection
-mongo_client = MongoClient(MONGO_URI)
-db = mongo_client["MovieBot"]
-movies_collection = db["movies"]
+bot = Client("EvaMaria", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ✅ Auto Indexing: Store files from multiple channels
-@client.on(events.NewMessage(chats=CHANNELS))
-async def index_movies(event):
-    if event.document:
-        file_name = event.document.attributes[0].file_name if event.document.attributes else "Unknown"
-        file_id = event.message.id
-        file_unique_id = event.document.file_unique_id
+# Start command
+def get_start_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Search Files", switch_inline_query="")],
+        [InlineKeyboardButton("Help", callback_data="help")]
+    ])
 
-        movies_collection.update_one(
-            {"file_unique_id": file_unique_id},
-            {"$set": {"file_name": file_name, "file_id": file_id, "channel_id": event.chat_id}},
-            upsert=True
-        )
-        print(f"Indexed: {file_name} from Channel {event.chat_id}")
+@bot.on_message(filters.command("start"))
+async def start(client, message: Message):
+    await message.reply_text("Hello! I am a file store bot. Upload a file, and I will save it for you!", reply_markup=get_start_keyboard())
+    user_data = {"_id": message.from_user.id, "name": message.from_user.first_name, "joined": datetime.utcnow()}
+    await users_col.update_one({"_id": message.from_user.id}, {"$set": user_data}, upsert=True)
 
-# ✅ Search System: Find movies
-@client.on(events.NewMessage(pattern='/search'))
-async def search_movies(event):
-    query = event.text.split(maxsplit=1)[-1].strip()
-    if not query:
-        await event.reply("⚠️ Please enter a movie name to search.")
-        return
+# Save files
+def get_file_keyboard(file_id):
+    return InlineKeyboardMarkup([[InlineKeyboardButton("Download", url=f"https://t.me/{bot.username}?start={file_id}")]])
 
-    results = list(movies_collection.find({"file_name": {"$regex": query, "$options": "i"}}).limit(10))
-    
-    if not results:
-        await event.reply("❌ No movies found.")
-        return
+@bot.on_message(filters.document | filters.video | filters.audio | filters.photo)
+async def save_file(client, message: Message):
+    file_id = message.document.file_id if message.document else message.video.file_id if message.video else message.audio.file_id if message.audio else message.photo.file_id
+    file_data = {"_id": file_id, "file_name": message.caption or "No Name"}
+    await files_col.insert_one(file_data)
+    await message.reply_text("File saved!", reply_markup=get_file_keyboard(file_id))
 
-    buttons = [
-        [Button.url(movie['file_name'], f"https://t.me/c/{abs(movie['channel_id'])}/{movie['file_id']}")]
-        for movie in results
-    ]
-    
-    await event.reply("🎬 **Search Results:**", buttons=buttons)
+# Search stored files
+@bot.on_inline_query()
+async def inline_search(client, query):
+    search_results = files_col.find({"file_name": {"$regex": query.query, "$options": "i"}})
+    results = [InlineQueryResultDocument(title=file["file_name"], document=file["_id"]) for file in await search_results.to_list(length=10)]
+    await query.answer(results, cache_time=1)
 
-# ✅ Start Command
-@client.on(events.NewMessage(pattern='/start'))
-async def start(event):
-    await event.reply(
-        "👋 Hello! I'm your movie bot.\n\n"
-        "🔍 Use /search <movie name> to find movies.\n"
-        "🎬 Use inline search (@botusername <movie name>) to find movies."
-    )
+# Broadcast to all users (Admin only)
+@bot.on_message(filters.command("broadcast") & filters.user(123456789))  # Replace with your Telegram ID
+async def broadcast(client, message: Message):
+    text = message.text.split(" ", 1)[1]
+    users = await users_col.find().to_list(length=10000)
+    for user in users:
+        try:
+            await client.send_message(user["_id"], text)
+        except:
+            pass
 
-# ✅ Admin Controls
-@client.on(events.NewMessage(pattern='/filter'))
-async def filter_command(event):
-    if not await is_admin(event.chat_id, event.sender_id):
-        await event.reply("🚫 Only admins can use this command.")
-        return
-    await event.reply("✅ Admin filter settings applied.")
-
-async def is_admin(chat_id, user_id):
-    try:
-        participant = await client.get_participant(chat_id, user_id)
-        return participant.is_admin
-    except:
-        return False
-
-# ✅ Flask Web Service (Keeps bot alive)
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "Bot is running"
-
-def run_web():
-    app.run(host="0.0.0.0", port=8000)
-
-# ✅ Run Bot & Web Server in Parallel
-if __name__ == '__main__':
-    threading.Thread(target=run_web).start()
-    with client:
-        print("Bot started 🚀")
-        client.run_until_disconnected()
+# Run the bot
+bot.run()
