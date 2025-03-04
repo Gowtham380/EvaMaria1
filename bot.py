@@ -1,4 +1,7 @@
 import os
+import uvicorn
+from fastapi import FastAPI
+from threading import Thread
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 from dotenv import load_dotenv
@@ -21,8 +24,15 @@ filters_collection = db["filters"]
 CHANNELS = list(map(int, os.getenv("CHANNELS", "").split(",")))
 ADMINS = list(map(int, os.getenv("ADMINS", "").split(",")))
 
-# Initialize the Bot
+# Initialize Pyrogram Bot
 bot = Client("EvaMaria1", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+
+# Start FastAPI for Koyeb health check
+app = FastAPI()
+
+@app.get("/")
+def home():
+    return {"status": "Bot is running"}
 
 # Function to Save Movie Files to MongoDB
 def save_to_db(file_id, file_name, file_size, channel_id):
@@ -98,7 +108,7 @@ async def add_filter(client, message: Message):
     if message.from_user.id not in ADMINS:
         await message.reply_text("❌ You are not authorized to use this command.")
         return
-    
+
     if len(message.command) < 3:
         await message.reply_text("Usage: `/add_filter keyword reply_text`")
         return
@@ -144,5 +154,11 @@ async def bot_stats(client, message: Message):
         f"🔍 Total Filters: {total_filters}"
     )
 
-# Run the Bot
-bot.run()
+# Run bot in a separate thread
+def run_bot():
+    bot.run()
+
+Thread(target=run_bot).start()
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
